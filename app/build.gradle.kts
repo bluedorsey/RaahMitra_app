@@ -58,4 +58,9 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
+
+    implementation("androidx.compose.material:material-icons-extended:1.5.0")
+    implementation("com.google.accompanist:accompanist-navigation-animation:0.34.0")
+    implementation("com.google.ai.client.generativeai:generativeai:0.9.0")
+
 }

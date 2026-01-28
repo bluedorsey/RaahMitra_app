@@ -1,7 +1,12 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    id("com.google.gms.google-services")
+    id("com.google.android.libraries.mapsplatform.secrets-gradle-plugin")
 }
 
 android {
@@ -14,6 +19,7 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
+
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -36,6 +42,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -62,5 +69,16 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended:1.5.0")
     implementation("com.google.accompanist:accompanist-navigation-animation:0.34.0")
     implementation("com.google.ai.client.generativeai:generativeai:0.9.0")
+    implementation("io.coil-kt:coil-compose:2.4.0")
+    implementation(platform("com.google.firebase:firebase-bom:34.7.0"))
+    implementation("com.google.firebase:firebase-analytics")
+    implementation("com.google.firebase:firebase-database")
+    implementation("com.google.firebase:firebase-firestore")
+    implementation("com.google.firebase:firebase-storage")
+
+
+
+
+
 
 }

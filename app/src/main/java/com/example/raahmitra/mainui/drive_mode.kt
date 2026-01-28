@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.IntentSender
 import android.content.pm.PackageManager
+import android.graphics.Paint
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -15,6 +16,7 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
@@ -31,8 +33,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
@@ -45,8 +52,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.android.gms.common.api.ResolvableApiException
 import com.google.android.gms.location.*
+import com.google.firebase.database.FirebaseDatabase
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.LinkedList
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
@@ -58,6 +67,23 @@ val ActiveGreen = Color(0xFF4CAF50)
 val AlertRed = Color(0xFFE53935)
 val TextWhite = Color.White
 val TextGrey = Color(0xFF8B95A5)
+val GraphLineColor = Color(0xFF00E5FF)
+
+// --- Firebase Data Model ---
+data class RoadAlert(
+    val type: String,
+    val latitude: Double,
+    val longitude: Double,
+    val timestamp: Long
+)
+
+data class GraphPoint(
+    val value: Float,
+    val timestamp: Long,
+    val locationTag: String? = null
+)
+
+data class BufferPoint(val value: Float, val timestamp: Long)
 
 /* 🔔 Notification sound helper */
 fun playTingSound(context: Context) {
@@ -85,70 +111,150 @@ fun checkAndEnableLocation(context: Context, launcher: (IntentSenderRequest) -> 
 }
 
 @Composable
-fun HomeScreen(
-    accelX: Float, accelY: Float, accelZ: Float,
-    gyroX: Float, gyroY: Float, gyroZ: Float
-) {
+fun HomeScreen() {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
+    // --- FIREBASE REFERENCE (Node name: "potholes") ---
+    // I changed the name to "potholes" to be specific
+    val database = remember { FirebaseDatabase.getInstance().getReference("potholes") }
+
     // State Management
     var driveMode by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("Ready to Drive") }
-    var locationDetail by remember { mutableStateOf("Distraction-free mode is off") }
+
+    var currentLat by remember { mutableDoubleStateOf(0.0) }
+    var currentLng by remember { mutableDoubleStateOf(0.0) }
+    var latestLocationStr by remember { mutableStateOf("Locating...") }
+
     var isAlertActive by remember { mutableStateOf(false) }
-    var lastTriggerTime by remember { mutableLongStateOf(0L) }
+    var lastAlertTime by remember { mutableLongStateOf(0L) }
 
-    // Filtering logic for pothole detection
-    var lastAz by remember { mutableFloatStateOf(0f) }
-    val alpha = 0.85f
+    val graphData = remember { mutableStateListOf<GraphPoint>() }
+    val maxDataPoints = 150
 
-    // Permissions & GPS Settings
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val settingResultRequest = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-        if (result.resultCode != Activity.RESULT_OK) statusMessage = "GPS Required for Potholes!"
+        if (result.resultCode != Activity.RESULT_OK) statusMessage = "GPS Required!"
     }
 
-    // --- Pothole Detection Logic ---
-    if (driveMode) {
-        val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+    // --- Background Location Worker ---
+    LaunchedEffect(driveMode) {
+        if (driveMode) {
+            while(driveMode) {
+                if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                    fusedLocationClient.lastLocation.addOnSuccessListener { loc ->
+                        if (loc != null) {
+                            currentLat = loc.latitude
+                            currentLng = loc.longitude
+                            latestLocationStr = "%.4f, %.4f".format(loc.latitude, loc.longitude)
+                        }
+                    }
+                }
+                delay(2000)
+            }
+        }
+    }
 
+    // --- SENSOR LOGIC ---
+    if (driveMode) {
         DisposableEffect(driveMode) {
+            val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+            val linearSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
+                ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+            val gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
+                ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+
+            val bufferSize = 40
+            val sensorBuffer = LinkedList<BufferPoint>()
+            val currentGravity = FloatArray(3) { 0f }
+            var isGravityInit = false
+            val gravityFilter = FloatArray(3)
+            val alpha = 0.8f
+
             val listener = object : SensorEventListener {
                 override fun onSensorChanged(event: SensorEvent) {
-                    val az = event.values[2]
-                    lastAz = alpha * lastAz + (1 - alpha) * az
-                    val linearZ = az - lastAz
-                    val now = System.currentTimeMillis()
+                    if (event.sensor.type == Sensor.TYPE_GRAVITY) {
+                        System.arraycopy(event.values, 0, currentGravity, 0, 3)
+                        isGravityInit = true
+                    } else if (event.sensor.type == Sensor.TYPE_ACCELEROMETER && !isGravityInit) {
+                        gravityFilter[0] = alpha * gravityFilter[0] + (1 - alpha) * event.values[0]
+                        gravityFilter[1] = alpha * gravityFilter[1] + (1 - alpha) * event.values[1]
+                        gravityFilter[2] = alpha * gravityFilter[2] + (1 - alpha) * event.values[2]
+                        System.arraycopy(gravityFilter, 0, currentGravity, 0, 3)
+                    }
 
-                    if (linearZ > 4.5f && now - lastTriggerTime > 7000) {
-                        lastTriggerTime = now
-                        isAlertActive = true
-                        playTingSound(context)
+                    if ((event.sensor.type == Sensor.TYPE_LINEAR_ACCELERATION || event.sensor.type == Sensor.TYPE_ACCELEROMETER)) {
+                        val now = System.currentTimeMillis()
+                        var ax = event.values[0]
+                        var ay = event.values[1]
+                        var az = event.values[2]
 
-                        if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-                            fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
-                                .addOnSuccessListener { loc ->
-                                    statusMessage = "POTHOLE DETECTED!"
-                                    locationDetail = "Lat: ${loc?.latitude}, Lon: ${loc?.longitude}"
+                        if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
+                            ax -= gravityFilter[0]
+                            ay -= gravityFilter[1]
+                            az -= gravityFilter[2]
+                        }
+
+                        // Vertical Force Calculation
+                        val gMagnitude = sqrt(currentGravity[0]*currentGravity[0] + currentGravity[1]*currentGravity[1] + currentGravity[2]*currentGravity[2])
+                        var verticalAccel = 0f
+                        if (gMagnitude > 0) {
+                            verticalAccel = (ax * currentGravity[0] + ay * currentGravity[1] + az * currentGravity[2]) / gMagnitude
+                        }
+
+                        sensorBuffer.add(BufferPoint(verticalAccel, now))
+                        if (sensorBuffer.size > bufferSize) sensorBuffer.removeFirst()
+
+                        var detectedTag: String? = null
+
+                        if (sensorBuffer.size == bufferSize && (now - lastAlertTime > 1500)) {
+                            val maxPoint = sensorBuffer.maxByOrNull { it.value }!!
+                            val minPoint = sensorBuffer.minByOrNull { it.value }!!
+                            val threshold = 3.5f
+
+                            if (maxPoint.value > threshold && minPoint.value < -threshold) {
+                                lastAlertTime = now
+                                isAlertActive = true
+                                playTingSound(context)
+                                detectedTag = latestLocationStr
+
+                                // Determine Type
+                                val anomalyType = if (maxPoint.timestamp < minPoint.timestamp) "SPEED BREAKER" else "POTHOLE"
+                                statusMessage = anomalyType
+
+                                // --- CHANGED LOGIC HERE ---
+                                // 1. Check if it is a POTHOLE (Ignore Speed Breakers for DB)
+                                // 2. Check if we have valid GPS Coordinates
+                                if (anomalyType == "POTHOLE" && currentLat != 0.0 && currentLng != 0.0) {
+                                    val alertData = RoadAlert(
+                                        type = "POTHOLE",
+                                        latitude = currentLat,
+                                        longitude = currentLng,
+                                        timestamp = now
+                                    )
+                                    // PUSH creates a new unique entry every time
+                                    database.push().setValue(alertData)
                                 }
-                        } else {
-                            statusMessage = "BUMP DETECTED"
+
+                                coroutineScope.launch {
+                                    delay(3000)
+                                    isAlertActive = false
+                                    statusMessage = "Driving Mode Active"
+                                }
+                            }
                         }
 
-                        coroutineScope.launch {
-                            delay(4000)
-                            isAlertActive = false
-                            statusMessage = "Driving Mode Active"
-                            locationDetail = "Monitoring road conditions..."
-                        }
+                        graphData.add(GraphPoint(verticalAccel, now, detectedTag))
+                        if (graphData.size > maxDataPoints) graphData.removeAt(0)
                     }
                 }
                 override fun onAccuracyChanged(s: Sensor?, a: Int) {}
             }
-            sensorManager.registerListener(listener, accelerometer, SensorManager.SENSOR_DELAY_GAME)
+
+            sensorManager.registerListener(listener, linearSensor, SensorManager.SENSOR_DELAY_GAME)
+            sensorManager.registerListener(listener, gravitySensor, SensorManager.SENSOR_DELAY_GAME)
             onDispose { sensorManager.unregisterListener(listener) }
         }
     }
@@ -160,9 +266,13 @@ fun HomeScreen(
         ) {
             TopHeader()
             Spacer(modifier = Modifier.height(24.dp))
+            Text("LIVE Z-AXIS DATA", color = TextGrey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(8.dp))
 
+            ContinuousSensorGraph(dataPoints = graphData)
+
+            Spacer(modifier = Modifier.height(24.dp))
             CarDisplayCard(isAlert = isAlertActive)
-
             Spacer(modifier = Modifier.weight(1f))
 
             Text(
@@ -172,16 +282,7 @@ fun HomeScreen(
                 color = if(isAlertActive) AlertRed else TextWhite,
                 textAlign = TextAlign.Center
             )
-            Text(
-                text = locationDetail,
-                style = MaterialTheme.typography.bodyMedium,
-                color = TextGrey,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(top = 8.dp)
-            )
 
-            Spacer(modifier = Modifier.height(32.dp))
-            SensorDebugBox(accelX, accelY, accelZ, gyroX, gyroY, gyroZ)
             Spacer(modifier = Modifier.height(32.dp))
 
             SwipeToDriveButton(
@@ -189,7 +290,6 @@ fun HomeScreen(
                 onSwipeComplete = {
                     driveMode = true
                     statusMessage = "Driving Mode Active"
-                    locationDetail = "Monitoring road conditions..."
                     if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
                         permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
                     }
@@ -198,10 +298,66 @@ fun HomeScreen(
                 onStopClick = {
                     driveMode = false
                     statusMessage = "Ready to Drive"
-                    locationDetail = "Distraction-free mode is off"
+                    graphData.clear()
+                    currentLat = 0.0
+                    currentLng = 0.0
                 }
             )
             Spacer(modifier = Modifier.height(100.dp))
+        }
+    }
+}
+
+// --- KEEP THESE UI COMPONENTS ---
+// They are perfect as they are.
+
+@Composable
+fun ContinuousSensorGraph(dataPoints: List<GraphPoint>) {
+    val density = LocalDensity.current
+    val textPaint = remember(density) {
+        Paint().apply {
+            color = android.graphics.Color.WHITE
+            textSize = with(density) { 10.sp.toPx() }
+            textAlign = Paint.Align.CENTER
+            isAntiAlias = true
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(180.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(CardBackground)
+            .padding(8.dp)
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            if (dataPoints.isEmpty()) return@Canvas
+            val width = size.width
+            val height = size.height
+            val midHeight = height / 2f
+
+            drawLine(TextGrey.copy(alpha = 0.3f), Offset(0f, midHeight), Offset(width, midHeight), 2f)
+
+            val maxRange = 10f
+            val scale = (height / 2f) / maxRange
+            val stepX = width / (dataPoints.size - 1).coerceAtLeast(1)
+            val path = Path()
+
+            dataPoints.forEachIndexed { index, point ->
+                val x = index * stepX
+                val y = midHeight - (point.value * scale).coerceIn(-midHeight + 10f, midHeight - 10f)
+
+                if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+
+                if (point.locationTag != null) {
+                    drawLine(TextGrey.copy(alpha = 0.5f), Offset(x, 10f), Offset(x, height - 25f), pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f))
+                    val dotColor = if (point.value > 0) ActiveGreen else AlertRed
+                    drawCircle(dotColor, radius = 8f, center = Offset(x, y))
+                    drawContext.canvas.nativeCanvas.drawText(point.locationTag, x, height - 12f, textPaint)
+                }
+            }
+            drawPath(path, GraphLineColor, style = Stroke(width = 3.dp.toPx()))
         }
     }
 }
@@ -286,7 +442,7 @@ fun CarDisplayCard(isAlert: Boolean) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(260.dp)
+            .height(220.dp)
             .clip(RoundedCornerShape(32.dp))
             .background(Brush.verticalGradient(listOf(bgColor, DarkBackground))),
         contentAlignment = Alignment.Center
@@ -295,7 +451,7 @@ fun CarDisplayCard(isAlert: Boolean) {
             imageVector = if (isAlert) Icons.Outlined.Report else Icons.Default.DirectionsCar,
             contentDescription = null,
             tint = if (isAlert) AlertRed else Color.DarkGray,
-            modifier = Modifier.size(if (isAlert) 150.dp else 120.dp)
+            modifier = Modifier.size(if (isAlert) 120.dp else 100.dp)
         )
     }
 }
@@ -308,17 +464,5 @@ fun TopHeader() {
             Text("Safe Drive Assistant", color = TextGrey, fontSize = 12.sp)
         }
         Icon(Icons.Default.Settings, null, tint = TextGrey)
-    }
-}
-
-@Composable
-fun SensorDebugBox(ax: Float, ay: Float, az: Float, gx: Float, gy: Float, gz: Float) {
-    Column(Modifier.fillMaxWidth().background(CardBackground.copy(alpha = 0.5f), RoundedCornerShape(12.dp)).padding(12.dp)) {
-        Text("SENSOR DATA MONITOR", color = TextGrey, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(4.dp))
-        Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
-            Text("Accel: %.2f, %.2f, %.2f".format(ax, ay, az), color = TextGrey, fontSize = 11.sp)
-            Text("Gyro: %.2f".format(gx), color = TextGrey, fontSize = 11.sp)
-        }
     }
 }

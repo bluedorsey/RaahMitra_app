@@ -1,6 +1,5 @@
 package com.example.raahmitra
 
-import ReportIssueScreen
 import android.graphics.Bitmap
 import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.core.animateDpAsState
@@ -49,10 +48,14 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.example.raahmitra.mainui.ReportStatusScreen
-import com.example.raahmitra.ui.theme.HomeScreen
 import com.google.accompanist.navigation.animation.AnimatedNavHost
 import com.google.accompanist.navigation.animation.composable
+
+// --- IMPORTANT: Ensure these imports match your actual file structure ---
+
+import com.example.raahmitra.mainui.ReportStatusScreen
+import com.example.raahmitra.ui.theme.HomeScreen
+import com.example.yourappname.ReportIssueScreen
 
 // Enum for Routes
 enum class ScreenName() {
@@ -97,17 +100,14 @@ fun screen_align(
             ) {
                 // 1. Home Screen
                 composable(ScreenName.mainscreen.name) {
-                    HomeScreen(
-                        accelX = accelX, accelY = accelY, accelZ = accelZ,
-                        gyroX = gyroX, gyroY = gyroY, gyroZ = gyroZ
-                    )
+                    HomeScreen()
                 }
 
                 // 2. Report Input Screen
                 composable(ScreenName.report_problem.name) {
                     ReportIssueScreen(
-                        // Pass a callback to handle data submission
-                        onSubmitSuccess = { desc, loc, img ->
+                        // FIX: Added explicit types here (String, String, Bitmap?)
+                        onSubmitSuccess = { desc: String, loc: String, img: Bitmap? ->
                             sentDescription = desc
                             sentLocation = loc
                             sentImage = img
@@ -125,7 +125,6 @@ fun screen_align(
                         newReportLocation = sentLocation,
                         newReportImage = sentImage,
                         onBackClick = {
-
                             navController.popBackStack()
                         }
                     )
@@ -150,7 +149,9 @@ fun FloatingBottomBar(
     modifier: Modifier = Modifier
 ) {
     Card(
-        modifier = modifier.fillMaxWidth().height(70.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .height(70.dp),
         shape = RoundedCornerShape(40.dp),
         elevation = CardDefaults.cardElevation(10.dp),
         colors = CardDefaults.cardColors(containerColor = Color(26, 33, 45, 255))
@@ -217,9 +218,20 @@ fun BottomBarItem(
             ) { onClick() }
             .padding(8.dp)
     ) {
-        Icon(imageVector = icon, contentDescription = title, tint = iconColor, modifier = Modifier.size(iconSize))
+        Icon(
+            imageVector = icon,
+            contentDescription = title,
+            tint = iconColor,
+            modifier = Modifier.size(iconSize)
+        )
         if (selected) {
-            Text(text = title, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = iconColor, modifier = Modifier.padding(top = 2.dp))
+            Text(
+                text = title,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = iconColor,
+                modifier = Modifier.padding(top = 2.dp)
+            )
         }
     }
 }

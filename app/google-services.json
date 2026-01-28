@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "955313992944",
+    "project_id": "raahmitra-3752d",
+    "storage_bucket": "raahmitra-3752d.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:955313992944:android:7656fb06a344721a00fe35",
+        "android_client_info": {
+          "package_name": "com.example.raahmitra"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDr-CiCYkxmZycgggMviT-jqfQa0apnUUQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

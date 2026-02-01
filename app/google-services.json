@@ -1,8 +1,8 @@
 {
   "project_info": {
-    "project_number": "955313992944",
-    "project_id": "raahmitra-3752d",
-    "storage_bucket": "raahmitra-3752d.firebasestorage.app"
+    "project_number": "",
+    "project_id": "",
+    "storage_bucket": ""
   },
   "client": [
     {
@@ -15,7 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyDr-CiCYkxmZycgggMviT-jqfQa0apnUUQ"
+          "current_key": ""
         }
       ],
       "services": {
